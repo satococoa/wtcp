@@ -18,6 +18,13 @@
 
 ## Installation
 
+### Homebrew
+
+```bash
+brew tap satococoa/tap
+brew install wtcp
+```
+
 ### Local install
 
 ```bash
