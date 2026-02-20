@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+wtcp: Copy files/dirs from the main worktree into the current worktree.
+
+Usage:
+  wtcp [--from <dir>] [--dry-run|-n] [--force|-f] <path>...
+
+Options:
+  --from <dir>   Copy source root (repo root of the "main" tree).
+  -n, --dry-run  Show what would be copied.
+  -f, --force    Overwrite existing files/directories.
+  -h, --help     Show this help.
+
+Examples:
+  wtcp README.md
+  wtcp config/ scripts/setup.sh
+  wtcp --dry-run .github/workflows/ci.yml
+  wtcp --from ../repo-main config/application.yml
+USAGE
+}
+
+die() {
+  echo "wtcp: $*" >&2
+  exit 1
+}
+
+warn() {
+  echo "wtcp: warning: $*" >&2
+}
+
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+normalize_rel_path() {
+  local p="$1"
+  local part
+  local -a parts
+  p="${p#./}"
+  p="${p%/}"
+  [[ -n "$p" ]] || return 1
+  [[ "$p" != "." ]] || return 1
+  [[ "$p" != /* ]] || return 1
+  IFS='/' read -r -a parts <<<"$p"
+  for part in "${parts[@]}"; do
+    [[ "$part" != ".." ]] || return 1
+  done
+  printf '%s\n' "$p"
+}
+
+from_root=""
+dry_run=0
+force=0
+paths=()
+
+while (($#)); do
+  case "$1" in
+    --from)
+      shift || die "--from requires a value"
+      from_root="${1:-}"
+      [[ -n "$from_root" ]] || die "--from requires a value"
+      shift
+      ;;
+    -n|--dry-run)
+      dry_run=1
+      shift
+      ;;
+    -f|--force)
+      force=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      while (($#)); do
+        paths+=("$1")
+        shift
+      done
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      paths+=("$1")
+      shift
+      ;;
+  esac
+done
+
+((${#paths[@]} > 0)) || {
+  usage
+  exit 2
+}
+
+has_cmd git || die "git is required"
+has_cmd rsync || die "rsync is required"
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git worktree"
+
+current_root="$(git rev-parse --show-toplevel)"
+current_root="$(cd "$current_root" && pwd -P)"
+
+if [[ -z "$from_root" ]]; then
+  main_path="$(git worktree list --porcelain | awk '$1=="worktree"{print $2; exit}')"
+  [[ -n "${main_path:-}" ]] || die "failed to detect main worktree; use --from"
+  from_root="$main_path"
+fi
+
+from_root="$(cd "$from_root" && pwd -P)"
+[[ -d "$from_root" ]] || die "source root not found: $from_root"
+[[ -d "$current_root" ]] || die "current root not found: $current_root"
+
+from_git_root="$(git -C "$from_root" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -n "$from_git_root" ]]; then
+  from_git_root="$(cd "$from_git_root" && pwd -P)"
+  if [[ "$from_git_root" != "$from_root" ]]; then
+    warn "--from points to a subdirectory. Using repository root: $from_git_root"
+    from_root="$from_git_root"
+  fi
+fi
+
+[[ "$from_root" != "$current_root" ]] || die "source and destination roots are the same"
+
+status=0
+copied=0
+
+for raw in "${paths[@]}"; do
+  if ! rel="$(normalize_rel_path "$raw")"; then
+    echo "wtcp: invalid path: $raw" >&2
+    status=1
+    continue
+  fi
+
+  src="$from_root/$rel"
+  dst="$current_root/$rel"
+
+  if [[ ! -e "$src" ]]; then
+    echo "wtcp: missing in source: $rel" >&2
+    status=1
+    continue
+  fi
+
+  if [[ $force -eq 0 && -e "$dst" ]]; then
+    echo "wtcp: destination exists (use --force): $rel" >&2
+    status=1
+    continue
+  fi
+
+  if [[ $dry_run -eq 1 ]]; then
+    printf 'would copy: %s -> %s\n' "$src" "$dst"
+    copied=$((copied + 1))
+    continue
+  fi
+
+  mkdir -p "$(dirname "$dst")"
+
+  if [[ -d "$src" ]]; then
+    mkdir -p "$dst"
+    rsync -ac -- "$src/" "$dst/"
+  else
+    rsync -ac -- "$src" "$dst"
+  fi
+
+  printf 'copied: %s\n' "$rel"
+  copied=$((copied + 1))
+done
+
+if [[ $dry_run -eq 1 ]]; then
+  printf 'dry-run: %d item(s)\n' "$copied"
+else
+  printf 'done: %d item(s)\n' "$copied"
+fi
+
+exit "$status"
