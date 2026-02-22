@@ -1,0 +1,9 @@
+interface:
+  display_name: "wtcp"
+  short_description: "Copy files/dirs from the main git worktree into the current worktree safely."
+  default_prompt: |
+    Use wtcp to copy repo-root-relative paths from the main worktree into the current worktree.
+    Prefer --dry-run first. Avoid --force unless overwrite is explicitly intended.
+
+policy:
+  allow_implicit_invocation: true
